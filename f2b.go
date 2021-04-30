@@ -1,61 +1,16 @@
 package main
 
 import (
-	"fmt"
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"path"
 	"regexp"
 	"strings"
 	"syscall"
 	"time"
 )
-
-type IPv4 uint32
-
-func parseIPv4(ip string) IPv4 {
-	var ipv4 IPv4 = 0
-	for i := 0; i < 4; i++ {
-		if len(ip) == 0 {
-			return ipv4
-		}
-		if i > 0 {
-			if ip[0] != '.' {
-				return ipv4
-			}
-			ip = ip[1:]
-		}
-		n, c, ok := dtoi(ip)
-		if !ok {
-			return ipv4
-		}
-		ip = ip[c:]
-		ipv4 = ipv4<<8 + IPv4(n&0xFF)
-	}
-	//if len(s) != 0 {
-	//	return nil
-	//}
-	return ipv4
-}
-
-func (ip IPv4) String() string {
-	return fmt.Sprintf("%d.%d.%d.%d", ip>>24, ip>>16&0xFF, ip>>8&0xFF, ip&0xFF)
-}
-
-func dtoi(s string) (n int, i int, ok bool) {
-	n = 0
-	for i = 0; i < len(s) && '0' <= s[i] && s[i] <= '9'; i++ {
-		n = n*10 + int(s[i]-'0')
-		if n > 255 {
-			return 255, i, false
-		}
-	}
-	if i == 0 {
-		return 0, 0, false
-	}
-	return n, i, true
-}
 
 func tailLog(file string, regexps []string, data chan IPv4) {
 	id := path.Base(file)
@@ -103,8 +58,12 @@ func tailLog(file string, regexps []string, data chan IPv4) {
 				for _, re := range reCompiled {
 					ip := re.FindStringSubmatch(line)
 					if len(ip) > 1 {
-						//data <- fmt.Sprintf("%s: %s", id, ip[1])
-						data <- parseIPv4(ip[1])
+						addr, err := parseIPv4(ip[1])
+						if err != nil {
+							log.Printf("%s: parse address \"%s\" error: %s\n", id, ip[1], err)
+							continue
+						}
+						data <- addr
 					}
 				}
 			}
@@ -140,6 +99,12 @@ type Entry struct {
 	count  int
 }
 
+const MAXHISTORYTIME = 3600 * 84 * 7 // 1 week
+
+func blocktime(count int) int64 {
+	return int64(100 << count)
+}
+
 func main() {
 	data := make(chan IPv4)
 	db := make(map[IPv4]Entry)
@@ -155,22 +120,38 @@ func main() {
 		[]string{"(?:pop3s|imaps) .* failed:.*\\[(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3})\\]$"},
 		data)
 	//var s string
+	whiteNet, _ := parseIPv4("192.168.1.0")
+	whiteMask := IPv4(0xFFFFFF00)
 	for {
 		s := <-data
-		entry, ok := db[s]
-		now := time.Now().Unix()
-		if !ok {
-			entry = Entry{
-				first:  now,
-				last:   now,
-			}
-		}
-		if now - entry.last < 3 && ok {
+		if s&whiteMask == whiteNet {
 			continue
 		}
-		entry.count++
+		now := time.Now().Unix()
+		entry, ok := db[s]
 
+		if !ok {
+			entry = Entry{first: now}
+		}
 
-		log.Println(s)
+		if entry.expire > now { // dup count or block failed
+			log.Println("dup count or block failed?", s)
+			continue
+		}
+
+		if entry.count < 10 {
+			entry.count++
+		}
+		bt := blocktime(entry.count)
+		entry.last = now
+		entry.expire = now + bt
+		log.Println("blocking", s, "for", bt)
+		cmd := exec.Command("/sbin/ipfw", "table", "blacklist", "add", s.String())
+		err := cmd.Run()
+		if err != nil {
+			log.Println("exec error:", err)
+		}
+
+		db[s] = entry
 	}
 }

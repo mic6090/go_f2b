@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"strconv"
 )
 
 type IPv4 uint32
@@ -12,7 +13,7 @@ type IPv4 uint32
 // a.b.c, c < 65536
 // a.b,   b < 16777216
 // a,     a < 4294967296
-func parseIPv4(ip string) (IPv4, error) {
+func ParseIPv4(ip string) (IPv4, error) {
 	if len(ip) == 0 {
 		return 0, errors.New("empty string")
 	}
@@ -63,49 +64,94 @@ func parseIPv4(ip string) (IPv4, error) {
 	return res, nil
 }
 
-/*
-func parseIPv4(ip string) IPv4 {
-	var ipv4 IPv4 = 0
-	for i := 0; i < 4; i++ {
-		if len(ip) == 0 {
-			return ipv4
-		}
-		if i > 0 {
-			if ip[0] != '.' {
-				return ipv4
-			}
-			ip = ip[1:]
-		}
-		n, c, ok := dtoi(ip)
-		if !ok {
-			return ipv4
-		}
-		ip = ip[c:]
-		ipv4 = ipv4<<8 + IPv4(n&0xFF)
+func ParseCIDR(s string) (IPv4, *IPNet, error) {
+	pos := indexChar(s, '/')
+	var addr, mask string
+	if pos < 0 { // address as /32 subnet
+		addr, mask = s, ""
+	} else {
+		addr, mask = s[:pos], s[pos+1:]
 	}
-	return ipv4
+	ip, err := ParseIPv4(addr)
+	if err != nil {
+		return 0, nil, err
+	}
+	var k, n int
+	for k = 0; k < len(mask) && '0' <= mask[k] && mask[k] <= '9'; k++ {
+		n = n*10 + int(mask[k]-'0')
+		if n > 32 {
+			return 0, nil, errors.New("too large mask value")
+		}
+	}
+	if k != len(mask) {
+		return 0, nil, errors.New("bad mask value")
+	}
+	if k == 0 {
+		n = 32
+	}
+	m := CIDRMask(n)
+	return ip, &IPNet{ip.Mask(m), m}, nil
 }
-*/
+
+func (ip IPv4) Mask(m IPMask) IPv4 {
+	return ip & IPv4(m)
+}
 
 func (ip IPv4) String() string {
 	return fmt.Sprintf("%d.%d.%d.%d", ip>>24, ip>>16&0xFF, ip>>8&0xFF, ip&0xFF)
 }
 
-/*
-func dtoi(s string) (n int, i int, ok bool) {
-	n = 0
-	for i = 0; i < len(s) && '0' <= s[i] && s[i] <= '9'; i++ {
-		n = n*10 + int(s[i]-'0')
-		if n > 255 {
-			return 255, i, false
-		}
+type IPMask uint32
+
+func CIDRMask(ones int) IPMask {
+	m := IPMask(^uint32(0))
+	if 0 > ones || ones > 32 {
+		return m
 	}
-	if i == 0 {
-		return 0, 0, false
-	}
-	return n, i, true
+	return m << (32 - ones)
 }
-*/
+
+func IPv4Mask(a, b, c, d byte) IPMask {
+	return IPMask(a)<<24 | IPMask(b)<<16 | IPMask(c)<<8 | IPMask(d)
+}
+
+func (m IPMask) Size() int {
+	var n int
+	v := m
+	for v&0x80000000 != 0 {
+		n++
+		v <<= 1
+	}
+	if v != 0 {
+		return -1
+	}
+	return n
+}
+
+func (m IPMask) String() string {
+	return fmt.Sprintf("%08x", uint32(m))
+}
+
+type IPNet struct {
+	IP   IPv4
+	Mask IPMask
+}
+
+func MakeIPNet(ip IPv4, mask IPMask) *IPNet {
+	return &IPNet{IP: ip.Mask(mask), Mask: mask}
+}
+
+func (n *IPNet) Contains(ip IPv4) bool {
+	return ip.Mask(n.Mask) == n.IP
+}
+
+func (n *IPNet) String() string {
+	l := n.Mask.Size()
+	if l < 0 {
+		return n.IP.String() + "/" + n.Mask.String()
+	}
+	return n.IP.String() + "/" + strconv.Itoa(l)
+}
 
 func indexChar(s string, c byte) int {
 	for i := 0; i < len(s); i++ {

@@ -58,7 +58,7 @@ func tailLog(file string, regexps []string, data chan IPv4) {
 				for _, re := range reCompiled {
 					ip := re.FindStringSubmatch(line)
 					if len(ip) > 1 {
-						addr, err := parseIPv4(ip[1])
+						addr, err := ParseIPv4(ip[1])
 						if err != nil {
 							log.Printf("%s: parse address \"%s\" error: %s\n", id, ip[1], err)
 							continue
@@ -120,7 +120,7 @@ func main() {
 		[]string{"(?:pop3s|imaps) .* failed:.*\\[(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3})\\]$"},
 		data)
 	//var s string
-	whiteNet, _ := parseIPv4("192.168.1.0")
+	whiteNet, _ := ParseIPv4("192.168.1.0")
 	whiteMask := IPv4(0xFFFFFF00)
 	for {
 		s := <-data

@@ -5,26 +5,14 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"path"
-	"regexp"
 	"strings"
 	"syscall"
 	"time"
 )
 
-func tailLog(file string, regexps []string, data chan IPv4) {
-	id := path.Base(file)
-
-	var reCompiled []*regexp.Regexp
-	for _, re := range regexps {
-		newRe, err := regexp.Compile(re)
-		if err == nil {
-			reCompiled = append(reCompiled, newRe)
-		}
-	}
-	if len(reCompiled) == 0 {
-		log.Fatal("no regexp to match!")
-	}
+func tailLog(idx int, data chan IPv4) {
+	id := Conf.services[idx].service
+	file := Conf.services[idx].logName
 
 	fstat := syscall.Stat_t{}
 	if err := syscall.Stat(file, &fstat); err != nil {
@@ -42,6 +30,7 @@ func tailLog(file string, regexps []string, data chan IPv4) {
 	c := 0
 	curOffset, err := fn.Seek(0, 2)
 	var fi os.FileInfo
+TAILLOOP:
 	for {
 		time.Sleep(200 * time.Millisecond)
 
@@ -55,13 +44,18 @@ func tailLog(file string, regexps []string, data chan IPv4) {
 			//log.Println(n)
 			curOffset += n
 			for _, line := range strings.Split(b.String(), "\n") {
-				for _, re := range reCompiled {
+				for _, re := range Conf.services[idx].regexps {
 					ip := re.FindStringSubmatch(line)
 					if len(ip) > 1 {
 						addr, err := ParseIPv4(ip[1])
 						if err != nil {
 							log.Printf("%s: parse address \"%s\" error: %s\n", id, ip[1], err)
 							continue
+						}
+						for _, ignore := range Conf.services[idx].serviceIgnoreIP {
+							if ignore.Contains(addr) {
+								continue TAILLOOP
+							}
 						}
 						data <- addr
 					}
@@ -92,66 +86,83 @@ func tailLog(file string, regexps []string, data chan IPv4) {
 }
 
 type Entry struct {
-	//ip IPv4
-	first  int64 // unixtime
 	last   int64
 	expire int64
 	count  int
 }
 
-const MAXHISTORYTIME = 3600 * 84 * 7 // 1 week
-
-func blocktime(count int) int64 {
-	return int64(100 << count)
+func blockTime(count int) int64 {
+	return int64(Conf.BanTime << count)
 }
 
 func main() {
+
+	err := readConfig("/usr/local/etc/go_f2b.conf")
+	if err != nil {
+		log.Fatalf("Config parse error: %s\n", err)
+	}
+
 	data := make(chan IPv4)
+	for i := range Conf.services {
+		go tailLog(i, data)
+	}
+
 	db := make(map[IPv4]Entry)
-	go tailLog("/jails/mail/var/log/maillog",
-		[]string{"AUTH failure .* relay=.*\\[(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3})\\]$"},
-		data)
-	go tailLog("/var/log/auth.log",
-		[]string{"Invalid (?:user|admin) (?:.*) from (\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}) port",
-			"Received disconnect from (\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}) port \\d{1,5}:11: Bye Bye \\[preauth\\]$",
-			"Connection closed by (?:authenticating|invalid) user \\S+ (\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}) port \\d{1,5} \\[preauth\\]$"},
-		data)
-	go tailLog("/jails/mail/var/log/messages",
-		[]string{"(?:pop3s|imaps) .* failed:.*\\[(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3})\\]$"},
-		data)
-	//var s string
-	whiteNet, _ := ParseIPv4("192.168.1.0")
-	whiteMask := IPv4(0xFFFFFF00)
+	ticker := time.NewTicker(10 * time.Second)
+
+MAINLOOP:
 	for {
-		s := <-data
-		if s&whiteMask == whiteNet {
-			continue
-		}
-		now := time.Now().Unix()
-		entry, ok := db[s]
+		select {
+		case ip := <-data:
+			for _, ignore := range Conf.globalIgnoreIP {
+				if ignore.Contains(ip) {
+					continue MAINLOOP
+				}
+			}
 
-		if !ok {
-			entry = Entry{first: now}
-		}
+			now := time.Now().Unix()
+			entry := db[ip]
 
-		if entry.expire > now { // dup count or block failed
-			log.Println("dup count or block failed?", s)
-			continue
-		}
+			if entry.expire > now {
+				log.Println("dup count or block failed?", ip)
+				continue
+			}
 
-		if entry.count < 10 {
 			entry.count++
-		}
-		bt := blocktime(entry.count)
-		entry.last = now
-		entry.expire = now + bt
-		log.Println("blocking", s, "for", bt)
-		cmd := exec.Command("/sbin/ipfw", "table", "blacklist", "add", s.String())
-		err := cmd.Run()
-		if err != nil {
-			log.Println("exec error:", err)
-		}
+			entry.last = now
+			//if entry.count < 10 {
+			//	entry.count++
+			//}
+			if entry.count >= Conf.MaxRetry {
+				bt := blockTime(entry.count - Conf.MaxRetry)
+				entry.expire = now + bt
+				log.Println("blocking", ip, "for", bt)
+				cmd := exec.Command("/sbin/ipfw", "table", "blacklist", "add", ip.String())
+				err = cmd.Run()
+				if err != nil {
+					log.Println("exec error:", err)
+				}
+			}
+			db[ip] = entry
 
-		db[s] = entry
+		case <-ticker.C:
+			now := time.Now().Unix()
+			for ip, entry := range db {
+				if entry.expire != 0 && entry.expire < now {
+					entry.expire = 0
+					log.Println("unblocking", ip)
+					cmd := exec.Command("/sbin/ipfw", "table", "blacklist", "delete", ip.String())
+					err = cmd.Run()
+					if err != nil {
+						log.Println("exec error:", err)
+					}
+				}
+				db[ip] = entry
+				if entry.last+Conf.DBPurgeAge < now && entry.expire == 0 {
+					log.Println("Purging entry:", ip.String())
+					delete(db, ip)
+				}
+			}
+		}
 	}
 }

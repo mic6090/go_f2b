@@ -8,8 +8,8 @@ import (
 
 type IPv4 uint32
 
-// parse IPv4 address:
-// a.b.c.d
+// ParseIPv4 parse IPv4 addresses in form:
+// a.b.c.d, all nums < 256
 // a.b.c, c < 65536
 // a.b,   b < 16777216
 // a,     a < 4294967296
@@ -64,7 +64,7 @@ func ParseIPv4(ip string) (IPv4, error) {
 	return res, nil
 }
 
-func ParseCIDR(s string) (IPv4, *IPNet, error) {
+func ParseCIDR(s string) (IPv4, IPNet, error) {
 	pos := indexChar(s, '/')
 	var addr, mask string
 	if pos < 0 { // address as /32 subnet
@@ -74,23 +74,23 @@ func ParseCIDR(s string) (IPv4, *IPNet, error) {
 	}
 	ip, err := ParseIPv4(addr)
 	if err != nil {
-		return 0, nil, err
+		return 0, IPNet{}, err
 	}
 	var k, n int
 	for k = 0; k < len(mask) && '0' <= mask[k] && mask[k] <= '9'; k++ {
 		n = n*10 + int(mask[k]-'0')
 		if n > 32 {
-			return 0, nil, errors.New("too large mask value")
+			return 0, IPNet{}, errors.New("too large mask value")
 		}
 	}
 	if k != len(mask) {
-		return 0, nil, errors.New("bad mask value")
+		return 0, IPNet{}, errors.New("bad mask value")
 	}
 	if k == 0 {
 		n = 32
 	}
 	m := CIDRMask(n)
-	return ip, &IPNet{ip.Mask(m), m}, nil
+	return ip, IPNet{ip.Mask(m), m}, nil
 }
 
 func (ip IPv4) Mask(m IPMask) IPv4 {
@@ -137,15 +137,15 @@ type IPNet struct {
 	Mask IPMask
 }
 
-func MakeIPNet(ip IPv4, mask IPMask) *IPNet {
-	return &IPNet{IP: ip.Mask(mask), Mask: mask}
+func MakeIPNet(ip IPv4, mask IPMask) IPNet {
+	return IPNet{IP: ip.Mask(mask), Mask: mask}
 }
 
-func (n *IPNet) Contains(ip IPv4) bool {
+func (n IPNet) Contains(ip IPv4) bool {
 	return ip.Mask(n.Mask) == n.IP
 }
 
-func (n *IPNet) String() string {
+func (n IPNet) String() string {
 	l := n.Mask.Size()
 	if l < 0 {
 		return n.IP.String() + "/" + n.Mask.String()

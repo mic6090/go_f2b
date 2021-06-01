@@ -84,7 +84,8 @@ func TestParseCIDR(t *testing.T) {
 			}
 			continue
 		}
-		if net == nil {
+		if net.IP == 0 && net.Mask == 0 {
+			//if net == nil {
 			if !tc.fail {
 				t.Errorf("ParseCIDR error for input %q", tc.in)
 			}
@@ -222,7 +223,7 @@ func TestMakeIPNet(t *testing.T) {
 		res := MakeIPNet(tc.ip, tc.mask)
 		if res.IP != tc.net || res.Mask != tc.mask {
 			t.Errorf("MakeIPNet for input {%q %q} return %q, expected {%q %q}",
-				tc.ip, tc.mask, *res, tc.net, tc.mask)
+				tc.ip, tc.mask, res, tc.net, tc.mask)
 		}
 	}
 }

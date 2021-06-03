@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bufio"
+	"fmt"
 	"io"
 	"log"
 	"os"
 	"os/exec"
+	"path"
 	"strings"
 	"syscall"
 	"time"
@@ -74,7 +77,7 @@ TAILLOOP:
 		if inode != fstat.Ino { // file was rotated?
 			inode = fstat.Ino
 			log.Printf("%s: inode change: %d\n", id, inode)
-			fn.Close()
+			_ = fn.Close()
 			fn, err = os.OpenFile(file, os.O_RDONLY, 0644)
 
 			if err != nil {
@@ -99,16 +102,25 @@ func main() {
 
 	err := readConfig("/usr/local/etc/go_f2b.conf")
 	if err != nil {
-		log.Fatalf("Config parse error: %s\n", err)
+		log.Fatalf("Config load error: %s\n", err)
 	}
+
+	var dumpNames [DUMPCOUNT]string
+	dumpNames[0] = path.Join(Conf.DBDumpPath, DUMPNAME)
+	for i := 1; i < DUMPCOUNT; i++ {
+		dumpNames[i] = fmt.Sprintf("%s.%d", dumpNames[0], i)
+	}
+
+	db := make(map[IPv4]Entry)
+	readDB(db, dumpNames)
 
 	data := make(chan IPv4)
 	for i := range Conf.services {
 		go tailLog(i, data)
 	}
 
-	db := make(map[IPv4]Entry)
 	ticker := time.NewTicker(10 * time.Second)
+	statTicker := time.NewTicker(15 * time.Minute)
 
 MAINLOOP:
 	for {
@@ -130,9 +142,6 @@ MAINLOOP:
 
 			entry.count++
 			entry.last = now
-			//if entry.count < 10 {
-			//	entry.count++
-			//}
 			if entry.count >= Conf.MaxRetry {
 				bt := blockTime(entry.count - Conf.MaxRetry)
 				entry.expire = now + bt
@@ -163,6 +172,59 @@ MAINLOOP:
 					delete(db, ip)
 				}
 			}
+
+		case <-statTicker.C:
+			total, blacks, maxCounts := len(db), 0, 0
+			for _, entry := range db {
+				if maxCounts < entry.count {
+					maxCounts = entry.count
+				}
+				if entry.expire > 0 {
+					blacks++
+				}
+			}
+			log.Printf("stat: %d total records, %d blocked, %d max level\n", total, blacks, maxCounts)
+
+			for i := DUMPCOUNT - 1; i > 0; i-- {
+				_ = os.Rename(dumpNames[i-1], dumpNames[i])
+			}
+			fh, err := os.OpenFile(dumpNames[0], os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+			if err != nil {
+				continue
+			}
+			for ip, e := range db {
+				_, err = fmt.Fprintf(fh, "%d %d %d %d\n", uint32(ip), e.last, e.expire, e.count)
+				if err != nil {
+					log.Println(err)
+				}
+			}
+			_ = fh.Close()
 		}
+	}
+}
+
+func readDB(db map[IPv4]Entry, dumpNames [DUMPCOUNT]string) {
+	var ip IPv4
+	var e Entry
+	for _, filename := range dumpNames {
+		fh, err := os.Open(filename)
+		if err != nil {
+			continue
+		}
+		fi, err := fh.Stat()
+		if err != nil || fi.Size() == 0 {
+			continue
+		}
+
+		sh := bufio.NewScanner(fh)
+		for sh.Scan() {
+			count, err := fmt.Sscan(sh.Text(), &ip, &e.last, &e.expire, &e.count)
+			if err == nil && count == 4 {
+				db[ip] = e
+			}
+		}
+		_ = fh.Close()
+		log.Printf("readDB: loaded %d entries", len(db))
+		break
 	}
 }

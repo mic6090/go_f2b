@@ -4,16 +4,20 @@ import (
 	"errors"
 	"fmt"
 	"github.com/pelletier/go-toml"
+	"os"
 	"regexp"
 	"strings"
 )
 
 const MAINSECTION = "main"
+const DUMPNAME = "dump"
+const DUMPCOUNT = 5
 
 type mainConfig struct {
 	BanTime        int
-	DBPurgeAge     int64
 	MaxRetry       int
+	DBPurgeAge     int64
+	DBDumpPath     string
 	globalIgnoreIP []IPNet
 	services       []serviceConfig
 }
@@ -45,6 +49,17 @@ func readConfig(filename string) error {
 	}
 	if Conf.MaxRetry < 1 {
 		return errors.New("invalid maxretry value")
+	}
+
+	fi, err := os.Stat(Conf.DBDumpPath)
+	if err != nil {
+		if err = os.MkdirAll(Conf.DBDumpPath, 0755); err != nil {
+			return err
+		}
+	} else {
+		if !fi.IsDir() {
+			return errors.New("db dump path set to file")
+		}
 	}
 
 	var reString string

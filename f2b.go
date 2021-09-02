@@ -165,8 +165,8 @@ MAINLOOP:
 					if err != nil {
 						log.Println("exec error:", err)
 					}
+					db[ip] = entry
 				}
-				db[ip] = entry
 				if entry.last+Conf.DBPurgeAge < now && entry.expire == 0 {
 					log.Println("Purging entry:", ip.String())
 					delete(db, ip)
@@ -216,10 +216,23 @@ func readDB(db map[IPv4]Entry, dumpNames [DUMPCOUNT]string) {
 			continue
 		}
 
+		now := time.Now().Unix()
 		sh := bufio.NewScanner(fh)
 		for sh.Scan() {
 			count, err := fmt.Sscan(sh.Text(), &ip, &e.last, &e.expire, &e.count)
 			if err == nil && count == 4 {
+				// check for active blocks
+				if e.expire < now {
+					e.expire = 0
+				}
+				if e.expire != 0 {
+					log.Println("blocking", ip)
+					cmd := exec.Command("/sbin/ipfw", "table", "blacklist", "add", ip.String())
+					err = cmd.Run()
+					if err != nil {
+						log.Println("exec error:", err)
+					}
+				}
 				db[ip] = e
 			}
 		}

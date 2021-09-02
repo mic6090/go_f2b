@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"github.com/pelletier/go-toml"
+	"log"
+	"net"
 	"os"
 	"regexp"
 	"strings"
@@ -18,6 +20,7 @@ type mainConfig struct {
 	MaxRetry       int
 	DBPurgeAge     int64
 	DBDumpPath     string
+	IgnoreSelf     bool
 	globalIgnoreIP []IPNet
 	services       []serviceConfig
 }
@@ -46,6 +49,28 @@ func readConfig(filename string) error {
 	}
 	if Conf.globalIgnoreIP, err = getIgnoreIP(mainSection); err != nil {
 		return err
+	}
+	if Conf.IgnoreSelf {
+		addrs, err := net.InterfaceAddrs()
+		if err != nil {
+			return err
+		}
+		for _, addr := range addrs {
+			if indexChar(addr.String(), ':') < 0 {
+				_, ipnet, err := ParseCIDR(addr.String())
+				if err == nil {
+					Conf.globalIgnoreIP = append(Conf.globalIgnoreIP, ipnet)
+				}
+			}
+		}
+	}
+	if len(Conf.globalIgnoreIP) > 0 {
+		var ips []string
+		for _, ipnet := range Conf.globalIgnoreIP {
+			ips = append(ips, ipnet.String())
+		}
+		log.Print("readConfig: whitelisted ips: [", strings.Join(ips, ","), "]\n")
+
 	}
 	if Conf.MaxRetry < 1 {
 		return errors.New("invalid maxretry value")

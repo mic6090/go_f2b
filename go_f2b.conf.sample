@@ -4,7 +4,7 @@ bantime = 600
 #
 dbpurgeage = 604800
 dbdumppath = "/var/tmp/dump"
-#ignoreself = true # TODO
+ignoreself = true
 ignoreip = "192.168.1.0/24, 8.8.8.8"
 maxretry = 3
 
